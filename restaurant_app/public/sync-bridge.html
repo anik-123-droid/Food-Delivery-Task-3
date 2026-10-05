@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>InnoDine Sync Bridge</title>
+</head>
+<body>
+  <script>
+    const CHANNEL_NAME = 'innodine_realtime_bus';
+    let broadcastChannel = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        broadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+      }
+    } catch (e) {}
+
+    let isInternalWrite = false;
+
+    function getInnodineData() {
+      const data = {};
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('innodine_')) {
+            data[key] = localStorage.getItem(key);
+          }
+        }
+      } catch (e) {}
+      return data;
+    }
+
+    // Forward BroadcastChannel messages to parent window
+    if (broadcastChannel) {
+      broadcastChannel.onmessage = (event) => {
+        if (window.parent && window.parent !== window && !isInternalWrite) {
+          window.parent.postMessage({
+            type: 'INNODINE_CROSS_EVENT',
+            event: event.data,
+            fullData: getInnodineData()
+          }, '*');
+        }
+      };
+    }
+
+    // Forward real storage events from other tabs to parent window
+    window.addEventListener('storage', (e) => {
+      if (isInternalWrite) return;
+      if (e.key && e.key.startsWith('innodine_')) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            type: 'INNODINE_CROSS_STORAGE',
+            key: e.key,
+            value: e.newValue,
+            fullData: getInnodineData()
+          }, '*');
+        }
+      }
+    });
+
+    // Handle incoming write requests from parent window
+    window.addEventListener('message', (event) => {
+      if (!event.data || !event.data.type) return;
+
+      if (event.data.type === 'INNODINE_REQUEST_SYNC') {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            type: 'INNODINE_CROSS_SYNC_RESPONSE',
+            fullData: getInnodineData()
+          }, '*');
+        }
+      } else if (event.data.type === 'INNODINE_WRITE_STORAGE') {
+        const { key, value } = event.data;
+        if (key && value !== undefined) {
+          try {
+            isInternalWrite = true;
+            localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+            if (broadcastChannel) {
+              broadcastChannel.postMessage({ type: 'CROSS_MUTATION', key, timestamp: Date.now() });
+            }
+          } catch (err) {
+          } finally {
+            setTimeout(() => { isInternalWrite = false; }, 30);
+          }
+        }
+      }
+    });
+
+    // Send initial data snapshot to parent
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'INNODINE_CROSS_SYNC_RESPONSE',
+        fullData: getInnodineData()
+      }, '*');
+    }
+  </script>
+</body>
+</html>
